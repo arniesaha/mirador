@@ -178,6 +178,7 @@ public actor ScreenCaptureService {
         // so without this a viewer connecting after idle-sleep sees a black screen.
         var wakeID: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Mirador viewer connected" as CFString, kIOPMUserActiveLocal, &wakeID)
+        Self.nudgeCursorToWakeDisplay()
 
         guard displaySleepAssertion == 0 else { return }
         var assertionID: IOPMAssertionID = 0
@@ -194,6 +195,17 @@ public actor ScreenCaptureService {
             log("IOPMAssertionCreateWithName failed (\(result)); display may sleep while streaming")
         }
         #endif
+    }
+
+    /// Posts a 1px cursor jiggle (returning to the original position). Real synthetic HID
+    /// activity is the most reliable way to wake a sleeping display across hardware, where the
+    /// power-assertion API alone can be unreliable. Requires Accessibility (already granted for
+    /// input injection).
+    private static func nudgeCursorToWakeDisplay() {
+        guard let position = CGEvent(source: nil)?.location else { return }
+        let nudged = CGPoint(x: position.x + 1, y: position.y)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: nudged, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: position, mouseButton: .left)?.post(tap: .cghidEventTap)
     }
 
     private func endPreventDisplaySleep() {
