@@ -173,6 +173,12 @@ public actor ScreenCaptureService {
     /// the captured frames stay live. Released in `stop()`; idempotent.
     private func beginPreventDisplaySleep() {
         #if canImport(IOKit)
+        // Wake the display if it was already asleep when the viewer connected. The hold
+        // assertion below only keeps an awake display awake — it won't wake a sleeping one,
+        // so without this a viewer connecting after idle-sleep sees a black screen.
+        var wakeID: IOPMAssertionID = 0
+        IOPMAssertionDeclareUserActivity("Mirador viewer connected" as CFString, kIOPMUserActiveLocal, &wakeID)
+
         guard displaySleepAssertion == 0 else { return }
         var assertionID: IOPMAssertionID = 0
         let reason = "Mirador is streaming this display" as CFString
