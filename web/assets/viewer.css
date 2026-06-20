@@ -1,0 +1,16 @@
+html, body { margin: 0; width: 100%; height: 100%; height: 100dvh; overflow: hidden; background: #020617; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overscroll-behavior: none; }
+body { display: flex; flex-direction: column; min-height: 0; }
+header { flex: 0 0 auto; padding: calc(10px + env(safe-area-inset-top)) 14px 10px 14px; background: #0f172a; display: flex; gap: 14px; align-items: center; min-height: 28px; font-size: 13px; white-space: nowrap; overflow: hidden; }
+#stage { position: relative; flex: 1 1 auto; min-height: 0; width: 100vw; background: #000; overflow: hidden; touch-action: none; }
+img { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; user-select: none; -webkit-user-drag: none; }
+#video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+#video[hidden] { display: none; }
+#stream.hidden { display: none; }
+#input-overlay { position: absolute; inset: 0; cursor: none; touch-action: none; outline: none; }
+#input-overlay:focus { box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.45); }
+#keyboard-capture { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0.01; color: transparent; background: transparent; border: 0; padding: 0; resize: none; outline: none; caret-color: transparent; pointer-events: none; }
+#mobile-controls { position: absolute; right: calc(12px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 5; display: flex; flex-direction: column; gap: 8px; pointer-events: auto; }
+#mobile-controls button { border: 1px solid rgba(148, 163, 184, 0.45); border-radius: 999px; background: rgba(15, 23, 42, 0.82); color: #e2e8f0; min-width: 48px; min-height: 44px; padding: 8px 12px; font: inherit; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+#mobile-help { position: absolute; left: calc(10px + env(safe-area-inset-left)); bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 4; max-width: min(72vw, 520px); padding: 7px 10px; border-radius: 12px; background: rgba(15, 23, 42, 0.72); color: #cbd5e1; font-size: 12px; pointer-events: none; }
+@media (hover: hover) and (pointer: fine) { #mobile-controls, #mobile-help { opacity: 0.18; } #mobile-controls:hover { opacity: 1; } }
+code { color: #93c5fd; }

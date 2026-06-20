@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>mirador viewer</title>
+  <link rel="stylesheet" href="/assets/viewer.css?v=h264-4&token={{AUTH_TOKEN_QUERY}}" />
+</head>
+<body>
+  <header>
+    <strong>mirador viewer</strong>
+    <span id="metrics">metrics loading…</span>
+    <span id="input-status">input ready</span>
+    <span id="transport-status">ws…</span>
+    <span id="video-status">video…</span>
+  </header>
+  <div id="stage">
+    <!-- H.264/WebCodecs renders into #video; the MJPEG <img> is the fallback when
+         WebCodecs (VideoDecoder) is unavailable. -->
+    <img id="stream" alt="Mac screen stream" />
+    <canvas id="video" hidden></canvas>
+    <div id="input-overlay" tabindex="0" aria-label="Mac input overlay"></div>
+    <textarea id="keyboard-capture" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" inputmode="text" aria-hidden="true"></textarea>
+    <div id="mobile-help">Tap = click · drag = hold/drag · two fingers = scroll</div>
+    <div id="mobile-controls" aria-label="Mobile controls">
+      <button id="keyboard-button" type="button" aria-label="Show keyboard">⌨︎</button>
+    </div>
+  </div>
+  <!-- endpoints: /metrics /input /ws/input /ws/video /stream.mjpg -->
+  <script>window.__MIRADOR_TOKEN__ = '{{AUTH_TOKEN_JS}}';</script>
+  <script src="/assets/viewer.js?v=h264-4&token={{AUTH_TOKEN_QUERY}}"></script>
+</body>
+</html>
