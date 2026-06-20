@@ -72,6 +72,10 @@ final class RemoteInputUIView: UIView {
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(onScroll(_:)))
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
+        // Also accept indirect scroll events (Magic Keyboard trackpad / mouse wheel), which a pan
+        // recognizer ignores by default. These arrive with numberOfTouches == 0, bypassing the
+        // 2-touch constraint above, so the same handler serves touchscreen and trackpad scrolling.
+        scroll.allowedScrollTypesMask = .all
         addGestureRecognizer(scroll)
 
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(onHover(_:))))
