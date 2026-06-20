@@ -8,6 +8,9 @@ import CoreImage
 #if canImport(ScreenCaptureKit)
 import ScreenCaptureKit
 #endif
+#if canImport(IOKit)
+import IOKit.pwr_mgt
+#endif
 
 /// Live per-format consumer demand, shared between the HTTP server (which knows how many
 /// MJPEG vs video viewers are connected) and the capture callback (which uses it to skip
@@ -40,6 +43,8 @@ public actor ScreenCaptureService {
     private var streamOutput: AnyObject?
     private var h264Encoder: H264Encoder?
     private var frameStats = CaptureFrameStats()
+    /// IOPMAssertionID (UInt32) held while capturing to keep the display awake; 0 = none.
+    private var displaySleepAssertion: UInt32 = 0
 
     public init(frameQueue: MJPEGFrameQueue, h264Queue: H264FrameQueue = H264FrameQueue(capacity: 2), consumers: CaptureConsumers = CaptureConsumers()) {
         self.frameQueue = frameQueue
@@ -126,6 +131,9 @@ public actor ScreenCaptureService {
             self.h264Encoder = encoder
             self.frameStats = CaptureFrameStats()
             self.running = true
+            // Keep the display rendering while a viewer is connected — otherwise the display
+            // idle-sleeps and ScreenCaptureKit captures a black frame (the cursor still moves).
+            beginPreventDisplaySleep()
             log("ScreenCaptureKit capture started for displayID=\(display.displayID) captureSize=\(configuration.width)x\(configuration.height) displaySize=\(display.width)x\(display.height) at ~\(Self.captureFps) fps (h264=\(encoder != nil))")
         } catch {
             self.running = false
@@ -157,6 +165,38 @@ public actor ScreenCaptureService {
         stream = nil
         streamOutput = nil
         running = false
+        // Release the wake assertion so the Mac can sleep normally once no viewer is connected.
+        endPreventDisplaySleep()
+    }
+
+    /// Holds an IOKit assertion that prevents the display from idle-sleeping while streaming, so
+    /// the captured frames stay live. Released in `stop()`; idempotent.
+    private func beginPreventDisplaySleep() {
+        #if canImport(IOKit)
+        guard displaySleepAssertion == 0 else { return }
+        var assertionID: IOPMAssertionID = 0
+        let reason = "Mirador is streaming this display" as CFString
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            reason,
+            &assertionID
+        )
+        if result == kIOReturnSuccess {
+            displaySleepAssertion = assertionID
+        } else {
+            log("IOPMAssertionCreateWithName failed (\(result)); display may sleep while streaming")
+        }
+        #endif
+    }
+
+    private func endPreventDisplaySleep() {
+        #if canImport(IOKit)
+        if displaySleepAssertion != 0 {
+            IOPMAssertionRelease(displaySleepAssertion)
+            displaySleepAssertion = 0
+        }
+        #endif
     }
 
     /// Asks the H.264 encoder to emit an IDR on its next frame (e.g. when a new viewer
