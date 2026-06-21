@@ -39,7 +39,9 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         # Allow ws:// to the Mac on the LAN / Tailscale (no TLS on the prototype service).
+        # NOTE: do NOT add NSAllowsLocalNetworking here — its mere presence makes iOS ignore
+        # NSAllowsArbitraryLoads, which then only exempts RFC-1918 LAN addresses and blocks
+        # Tailscale's 100.64.0.0/10 (CGNAT) range with an ATS error.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: "Mirador connects to your Mac on the local network to stream and control its screen."
