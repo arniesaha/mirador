@@ -158,18 +158,23 @@ private struct KeyBar: View {
     @ObservedObject var state: InputState
 
     var body: some View {
-        HStack(spacing: 6) {
-            specialKey("esc") { send("Escape") }
-            specialKey("tab") { send("Tab") }
-            modKey("⌃", on: state.control) { state.control.toggle() }
-            modKey("⌥", on: state.option) { state.option.toggle() }
-            modKey("⌘", on: state.command) { state.command.toggle() }
-            Spacer(minLength: 4)
-            specialKey("←") { send("ArrowLeft") }
-            specialKey("↓") { send("ArrowDown") }
-            specialKey("↑") { send("ArrowUp") }
-            specialKey("→") { send("ArrowRight") }
-            Spacer(minLength: 4)
+        // The keys don't all fit across a phone in portrait, so the row scrolls horizontally;
+        // the keyboard toggle stays pinned on the right so it's always reachable.
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    specialKey("esc") { send("Escape") }
+                    specialKey("tab") { send("Tab") }
+                    modKey("⌃", on: state.control) { state.control.toggle() }
+                    modKey("⌥", on: state.option) { state.option.toggle() }
+                    modKey("⌘", on: state.command) { state.command.toggle() }
+                    Color.clear.frame(width: 12, height: 1)   // group separator
+                    specialKey("←") { send("ArrowLeft") }
+                    specialKey("↓") { send("ArrowDown") }
+                    specialKey("↑") { send("ArrowUp") }
+                    specialKey("→") { send("ArrowRight") }
+                }
+            }
             specialKey(state.keyboardVisible ? "⌄" : "⌨") { state.keyboardVisible.toggle() }
         }
         .padding(.horizontal, 10)

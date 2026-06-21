@@ -169,7 +169,8 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         tap.require(toFail: dragHold)
         addGestureRecognizer(tap)
 
-        // Two-finger drag → scroll (also accepts indirect scroll from trackpad / mouse wheel).
+        // Two-finger drag → pan the zoomed viewport when zoomed in, else scroll the remote content
+        // (also accepts indirect scroll from trackpad / mouse wheel).
         scroll = UIPanGestureRecognizer(target: self, action: #selector(onScroll(_:)))
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
@@ -290,6 +291,23 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         if newOffset != state.offset { state.offset = newOffset }
     }
 
+    /// Two-finger drag while zoomed: move the visible viewport by a finger translation (content
+    /// follows the fingers), clamped to the content edges. The virtual cursor is recentered in the
+    /// new viewport so a subsequent one-finger move's edge-follow doesn't snap the view back.
+    private func panViewport(byPoints t: CGPoint) {
+        let r = contentRect
+        let z = max(state.zoom, 1)
+        guard z > 1.001, r.width > 0, r.height > 0 else { return }
+        let maxX = 0.5 * (z - 1) * r.width
+        let maxY = 0.5 * (z - 1) * r.height
+        var o = state.offset
+        o.width = min(max(o.width + t.x, -maxX), maxX)
+        o.height = min(max(o.height + t.y, -maxY), maxY)
+        state.offset = o
+        state.cursorNorm = CGPoint(x: 0.5 - o.width / (z * r.width),
+                                   y: 0.5 - o.height / (z * r.height))
+    }
+
     // MARK: Gesture handlers
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
@@ -331,6 +349,12 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         guard g.state == .changed else { g.setTranslation(.zero, in: self); return }
         let t = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        // When zoomed in, two fingers pan the viewport to another part of the screen; otherwise
+        // they scroll the remote content as before.
+        if state.zoom > 1.001 {
+            panViewport(byPoints: t)
+            return
+        }
         let c = state.cursorNorm
         session?.sendScroll(x: Double(c.x), y: Double(c.y), deltaX: Double(-t.x), deltaY: Double(-t.y))
     }
