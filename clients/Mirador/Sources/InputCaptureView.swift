@@ -39,14 +39,64 @@ enum KeyMap {
     ]
 }
 
-/// Full-screen transparent view that captures touch/trackpad/keyboard and forwards normalized
-/// input to the session. Coordinates are mapped against the letterboxed video content rect.
-final class RemoteInputUIView: UIView {
+/// Maps a *typed character* (from the iOS software keyboard's `insertText`) to a server `code` plus
+/// whether Shift is implied, so latched modifiers (⌘/⌃/⌥) can be applied as a real key chord rather
+/// than typed text. US-QWERTY layout — codes are positional, so non-US layouts may mis-map.
+enum SoftKeyMap {
+    static func code(for ch: Character) -> (code: String, shift: Bool)? {
+        if let ascii = ch.asciiValue {
+            if ascii >= 97, ascii <= 122 {                       // a–z
+                return ("Key\(Character(UnicodeScalar(ascii - 32)))", false)
+            }
+            if ascii >= 65, ascii <= 90 {                        // A–Z (shifted)
+                return ("Key\(ch)", true)
+            }
+        }
+        return table[ch]
+    }
+
+    private static let table: [Character: (String, Bool)] = [
+        "1": ("Digit1", false), "2": ("Digit2", false), "3": ("Digit3", false), "4": ("Digit4", false),
+        "5": ("Digit5", false), "6": ("Digit6", false), "7": ("Digit7", false), "8": ("Digit8", false),
+        "9": ("Digit9", false), "0": ("Digit0", false),
+        "!": ("Digit1", true), "@": ("Digit2", true), "#": ("Digit3", true), "$": ("Digit4", true),
+        "%": ("Digit5", true), "^": ("Digit6", true), "&": ("Digit7", true), "*": ("Digit8", true),
+        "(": ("Digit9", true), ")": ("Digit0", true),
+        "-": ("Minus", false), "=": ("Equal", false), "[": ("BracketLeft", false), "]": ("BracketRight", false),
+        "\\": ("Backslash", false), ";": ("Semicolon", false), "'": ("Quote", false), "`": ("Backquote", false),
+        ",": ("Comma", false), ".": ("Period", false), "/": ("Slash", false), " ": ("Space", false),
+        "_": ("Minus", true), "+": ("Equal", true), "{": ("BracketLeft", true), "}": ("BracketRight", true),
+        "|": ("Backslash", true), ":": ("Semicolon", true), "\"": ("Quote", true), "~": ("Backquote", true),
+        "<": ("Comma", true), ">": ("Period", true), "?": ("Slash", true)
+    ]
+}
+
+/// Full-screen transparent view that captures touch/trackpad/keyboard and forwards normalized input
+/// to the session. Direct touches drive a relative *virtual cursor* (trackpad model); the iPad Magic
+/// Keyboard trackpad keeps its absolute hover/click path. Coordinates map against the letterboxed
+/// video content rect.
+final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     weak var session: RemoteSession?
+    let state: InputState
     var onRevealControls: (() -> Void)?
 
-    init(session: RemoteSession) {
+    /// How far the virtual cursor travels per point of finger movement (before the zoom divisor).
+    private static let sensitivity: CGFloat = 1.4
+
+    private var dragging = false
+    private(set) var keyboardVisible = false
+
+    // Recognizers we cross-reference in the delegate.
+    private var onePan: UIPanGestureRecognizer!
+    private var dragHold: UILongPressGestureRecognizer!
+    private var tap: UITapGestureRecognizer!
+    private var rightTap: UITapGestureRecognizer!
+    private var scroll: UIPanGestureRecognizer!
+    private var pinch: UIPinchGestureRecognizer!
+
+    init(session: RemoteSession, state: InputState) {
         self.session = session
+        self.state = state
         super.init(frame: .zero)
         backgroundColor = .clear
         isMultipleTouchEnabled = true
@@ -57,26 +107,48 @@ final class RemoteInputUIView: UIView {
     override var canBecomeFirstResponder: Bool { true }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { becomeFirstResponder() }
+        if window != nil { becomeFirstResponder() }   // capture hardware keys; soft keyboard stays hidden
     }
 
     private func setupGestures() {
-        let tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
+        // One-finger relative cursor (move) folded with a long-press that promotes to a drag.
+        onePan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
+        onePan.maximumNumberOfTouches = 1
+        onePan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        onePan.delegate = self
+        addGestureRecognizer(onePan)
+
+        dragHold = UILongPressGestureRecognizer(target: self, action: #selector(onDragHold(_:)))
+        dragHold.minimumPressDuration = 0.4
+        dragHold.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        dragHold.delegate = self
+        addGestureRecognizer(dragHold)
+
+        // Tap → click at the virtual cursor (works for direct fingers and the indirect trackpad,
+        // whose cursor is tracked via hover).
+        tap = UITapGestureRecognizer(target: self, action: #selector(onTap(_:)))
+        tap.require(toFail: onePan)
+        tap.require(toFail: dragHold)
         addGestureRecognizer(tap)
 
-        let drag = UIPanGestureRecognizer(target: self, action: #selector(onDrag(_:)))
-        drag.minimumNumberOfTouches = 1
-        drag.maximumNumberOfTouches = 1
-        addGestureRecognizer(drag)
-
-        let scroll = UIPanGestureRecognizer(target: self, action: #selector(onScroll(_:)))
+        // Two-finger drag → scroll (also accepts indirect scroll from trackpad / mouse wheel).
+        scroll = UIPanGestureRecognizer(target: self, action: #selector(onScroll(_:)))
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
-        // Also accept indirect scroll events (Magic Keyboard trackpad / mouse wheel), which a pan
-        // recognizer ignores by default. These arrive with numberOfTouches == 0, bypassing the
-        // 2-touch constraint above, so the same handler serves touchscreen and trackpad scrolling.
         scroll.allowedScrollTypesMask = .all
+        scroll.delegate = self
         addGestureRecognizer(scroll)
+
+        // Two-finger tap → right-click (only when it isn't the start of a scroll/pinch).
+        rightTap = UITapGestureRecognizer(target: self, action: #selector(onRightTap(_:)))
+        rightTap.numberOfTouchesRequired = 2
+        addGestureRecognizer(rightTap)
+
+        pinch = UIPinchGestureRecognizer(target: self, action: #selector(onPinch(_:)))
+        pinch.delegate = self
+        addGestureRecognizer(pinch)
+        rightTap.require(toFail: scroll)
+        rightTap.require(toFail: pinch)
 
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(onHover(_:))))
 
@@ -86,6 +158,8 @@ final class RemoteInputUIView: UIView {
     }
 
     @objc private func onThreeFingerTap() { onRevealControls?() }
+
+    // MARK: Coordinate mapping
 
     private var contentRect: CGRect {
         let vs = session?.videoSize ?? CGSize(width: 16, height: 9)
@@ -102,35 +176,165 @@ final class RemoteInputUIView: UIView {
         return (Double(nx), Double(ny))
     }
 
-    @objc private func onTap(_ g: UITapGestureRecognizer) {
-        if !isFirstResponder { becomeFirstResponder() }
-        guard let (x, y) = normalized(g.location(in: self)) else { return }
-        session?.sendPointer("pointerDown", x: x, y: y, button: 0, buttons: 1)
-        session?.sendPointer("pointerUp", x: x, y: y, button: 0, buttons: 0)
+    /// Send a pointer event located at the current virtual cursor.
+    private func sendCursorPointer(_ type: String, button: Int = 0, buttons: Int = 0) {
+        let c = state.cursorNorm
+        session?.sendPointer(type, x: Double(c.x), y: Double(c.y), button: button, buttons: buttons)
     }
 
-    @objc private func onDrag(_ g: UIPanGestureRecognizer) {
-        guard let (x, y) = normalized(g.location(in: self)) else { return }
+    /// Advance the virtual cursor by a finger translation (in points). Finer when zoomed in.
+    private func moveCursor(byPoints t: CGPoint) {
+        let r = contentRect
+        guard r.width > 0, r.height > 0 else { return }
+        let z = max(state.zoom, 1)
+        var c = state.cursorNorm
+        c.x = min(max(c.x + (t.x / z) / r.width * Self.sensitivity, 0), 1)
+        c.y = min(max(c.y + (t.y / z) / r.height * Self.sensitivity, 0), 1)
+        state.cursorNorm = c
+        applyEdgeFollow()
+    }
+
+    /// When zoomed, pan the viewport so the cursor stays inside an edge margin. Offset is re-derived
+    /// from the cursor each call (never accumulated) to avoid drift, and clamped to the letterbox.
+    private func applyEdgeFollow() {
+        let r = contentRect
+        guard r.width > 0, r.height > 0 else { return }
+        let z = max(state.zoom, 1)
+        guard z > 1.001 else {
+            if state.offset != .zero { state.offset = .zero }
+            return
+        }
+        let visible = 1.0 / z
+        var cx = 0.5 - state.offset.width / (z * r.width)
+        var cy = 0.5 - state.offset.height / (z * r.height)
+        let margin = 0.12 * visible
+        let cur = state.cursorNorm
+        if cur.x < cx - visible / 2 + margin { cx = cur.x - visible / 2 + margin }
+        else if cur.x > cx + visible / 2 - margin { cx = cur.x + visible / 2 - margin }
+        if cur.y < cy - visible / 2 + margin { cy = cur.y - visible / 2 + margin }
+        else if cur.y > cy + visible / 2 - margin { cy = cur.y + visible / 2 - margin }
+        cx = min(max(cx, visible / 2), 1 - visible / 2)
+        cy = min(max(cy, visible / 2), 1 - visible / 2)
+        let newOffset = CGSize(width: (0.5 - cx) * z * r.width, height: (0.5 - cy) * z * r.height)
+        if newOffset != state.offset { state.offset = newOffset }
+    }
+
+    // MARK: Gesture handlers
+
+    @objc private func onTap(_ g: UITapGestureRecognizer) {
+        if !isFirstResponder { becomeFirstResponder() }
+        sendCursorPointer("pointerDown", button: 0, buttons: 1)
+        sendCursorPointer("pointerUp", button: 0, buttons: 0)
+    }
+
+    @objc private func onPan(_ g: UIPanGestureRecognizer) {
         switch g.state {
-        case .began: session?.sendPointer("pointerDown", x: x, y: y, button: 0, buttons: 1)
-        case .changed: session?.sendPointer("pointerMove", x: x, y: y, button: 0, buttons: 1)
-        case .ended, .cancelled, .failed: session?.sendPointer("pointerUp", x: x, y: y, button: 0, buttons: 0)
+        case .changed:
+            let t = g.translation(in: self)
+            g.setTranslation(.zero, in: self)
+            moveCursor(byPoints: t)
+            sendCursorPointer("pointerMove", buttons: dragging ? 1 : 0)
+        case .ended, .cancelled, .failed:
+            if dragging { sendCursorPointer("pointerUp", buttons: 0); dragging = false }
         default: break
         }
     }
 
-    @objc private func onScroll(_ g: UIPanGestureRecognizer) {
-        guard g.state == .changed, let (x, y) = normalized(g.location(in: self)) else {
-            g.setTranslation(.zero, in: self); return
+    /// A stationary long-press promotes the one-finger gesture to a left-button drag.
+    @objc private func onDragHold(_ g: UILongPressGestureRecognizer) {
+        switch g.state {
+        case .began:
+            dragging = true
+            sendCursorPointer("pointerDown", button: 0, buttons: 1)
+        case .ended, .cancelled, .failed:
+            if dragging { sendCursorPointer("pointerUp", buttons: 0); dragging = false }
+        default: break
         }
-        let t = g.translation(in: self)
-        session?.sendScroll(x: x, y: y, deltaX: Double(-t.x), deltaY: Double(-t.y))
-        g.setTranslation(.zero, in: self)
     }
 
+    @objc private func onRightTap(_ g: UITapGestureRecognizer) {
+        sendCursorPointer("pointerDown", button: 2, buttons: 2)
+        sendCursorPointer("pointerUp", button: 2, buttons: 0)
+    }
+
+    @objc private func onScroll(_ g: UIPanGestureRecognizer) {
+        guard g.state == .changed else { g.setTranslation(.zero, in: self); return }
+        let t = g.translation(in: self)
+        g.setTranslation(.zero, in: self)
+        let c = state.cursorNorm
+        session?.sendScroll(x: Double(c.x), y: Double(c.y), deltaX: Double(-t.x), deltaY: Double(-t.y))
+    }
+
+    @objc private func onPinch(_ g: UIPinchGestureRecognizer) {
+        switch g.state {
+        case .changed:
+            state.zoom = min(max(state.zoom * g.scale, 1), 3)
+            g.scale = 1
+            applyEdgeFollow()
+        case .ended, .cancelled:
+            applyEdgeFollow()
+        default: break
+        }
+    }
+
+    /// Indirect pointer (iPad trackpad): absolute cursor that also seeds the virtual cursor so taps
+    /// land where the pointer is.
     @objc private func onHover(_ g: UIHoverGestureRecognizer) {
         guard let (x, y) = normalized(g.location(in: self)) else { return }
+        state.cursorNorm = CGPoint(x: x, y: y)
         session?.sendPointer("pointerMove", x: x, y: y, button: 0, buttons: 0)
+    }
+
+    // MARK: UIGestureRecognizerDelegate
+
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // Pinch and 2-finger scroll coexist (each reads only its own axis); the long-press timer runs
+        // alongside the one-finger pan so a hold can promote an in-flight gesture to a drag.
+        if (g == pinch && other == scroll) || (g == scroll && other == pinch) { return true }
+        if (g == onePan && other == dragHold) || (g == dragHold && other == onePan) { return true }
+        return false
+    }
+
+    // MARK: Software keyboard (UIKeyInput)
+
+    /// A zero-size input view keeps us first responder (so hardware keys keep flowing) without
+    /// presenting the software keyboard. Swapped for `nil` to reveal the system keyboard on demand.
+    private lazy var zeroInputView = UIView(frame: .zero)
+    override var inputView: UIView? { keyboardVisible ? nil : zeroInputView }
+
+    func syncKeyboard(visible: Bool) {
+        guard keyboardVisible != visible else { return }
+        keyboardVisible = visible
+        if visible, !isFirstResponder { becomeFirstResponder() }
+        reloadInputViews()
+    }
+
+    var hasText: Bool { true }
+
+    func insertText(_ text: String) {
+        if text == "\n" { sendChord(code: "Enter"); return }
+        if text == "\t" { sendChord(code: "Tab"); return }
+
+        // With a modifier latched, a single character becomes a real key chord (⌘C, ⌃C, …).
+        if state.anyModifierLatched, text.count == 1, let ch = text.first,
+           let mapped = SoftKeyMap.code(for: ch) {
+            sendChord(code: mapped.code, extraShift: mapped.shift)
+            return
+        }
+        if state.anyModifierLatched { state.clearModifiers() } // couldn't apply — drop the latch
+        session?.sendText(text)
+    }
+
+    func deleteBackward() { sendChord(code: "Backspace") }
+
+    /// Send a key down+up with the currently-latched modifiers, then clear the (one-shot) latch.
+    private func sendChord(code: String, extraShift: Bool = false) {
+        let shift = state.shift || extraShift
+        let control = state.control, option = state.option, command = state.command
+        session?.sendKey(down: true, code: code, shift: shift, control: control, option: option, command: command)
+        session?.sendKey(down: false, code: code, shift: shift, control: control, option: option, command: command)
+        state.clearModifiers()
     }
 
     // MARK: Hardware keyboard
@@ -172,13 +376,16 @@ final class RemoteInputUIView: UIView {
 
 struct InputCaptureView: UIViewRepresentable {
     let session: RemoteSession
+    @ObservedObject var state: InputState
     var onRevealControls: () -> Void = {}
+
     func makeUIView(context: Context) -> RemoteInputUIView {
-        let view = RemoteInputUIView(session: session)
+        let view = RemoteInputUIView(session: session, state: state)
         view.onRevealControls = onRevealControls
         return view
     }
     func updateUIView(_ uiView: RemoteInputUIView, context: Context) {
         uiView.onRevealControls = onRevealControls
+        uiView.syncKeyboard(visible: state.keyboardVisible)
     }
 }
