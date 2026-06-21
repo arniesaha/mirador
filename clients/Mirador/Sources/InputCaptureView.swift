@@ -87,6 +87,11 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     private var dragging = false
     private(set) var keyboardVisible = false
 
+    /// The relative virtual-cursor model, pinch-zoom, and on-screen keyboard are phone-only. On iPad
+    /// (with its larger screen and trackpad) we keep the original absolute touch model so direct
+    /// click-and-drag and the trackpad pointer behave as before.
+    private let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+
     // Recognizers we cross-reference in the delegate.
     private var onePan: UIPanGestureRecognizer!
     private var dragHold: UILongPressGestureRecognizer!
@@ -116,6 +121,34 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     private func setupGestures() {
+        if isPhone { setupPhoneGestures() } else { setupPadGestures() }
+    }
+
+    /// iPad: the original absolute model — tap clicks at the touch point, one finger drags directly,
+    /// two fingers scroll, and the trackpad pointer maps absolutely via hover.
+    private func setupPadGestures() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(onTapAbsolute(_:)))
+        addGestureRecognizer(tap)
+
+        let drag = UIPanGestureRecognizer(target: self, action: #selector(onDragAbsolute(_:)))
+        drag.minimumNumberOfTouches = 1
+        drag.maximumNumberOfTouches = 1
+        addGestureRecognizer(drag)
+
+        scroll = UIPanGestureRecognizer(target: self, action: #selector(onScrollAbsolute(_:)))
+        scroll.minimumNumberOfTouches = 2
+        scroll.maximumNumberOfTouches = 2
+        scroll.allowedScrollTypesMask = .all
+        addGestureRecognizer(scroll)
+
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(onHoverAbsolute(_:))))
+
+        let reveal = UITapGestureRecognizer(target: self, action: #selector(onThreeFingerTap))
+        reveal.numberOfTouchesRequired = 3
+        addGestureRecognizer(reveal)
+    }
+
+    private func setupPhoneGestures() {
         // One-finger relative cursor (move) folded with a long-press that promotes to a drag.
         onePan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
         onePan.maximumNumberOfTouches = 1
@@ -163,6 +196,39 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     @objc private func onThreeFingerTap() { onRevealControls?() }
+
+    // MARK: iPad absolute handlers (original behavior)
+
+    @objc private func onTapAbsolute(_ g: UITapGestureRecognizer) {
+        if !isFirstResponder, GCKeyboard.coalesced != nil { becomeFirstResponder() }
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        session?.sendPointer("pointerDown", x: x, y: y, button: 0, buttons: 1)
+        session?.sendPointer("pointerUp", x: x, y: y, button: 0, buttons: 0)
+    }
+
+    @objc private func onDragAbsolute(_ g: UIPanGestureRecognizer) {
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        switch g.state {
+        case .began: session?.sendPointer("pointerDown", x: x, y: y, button: 0, buttons: 1)
+        case .changed: session?.sendPointer("pointerMove", x: x, y: y, button: 0, buttons: 1)
+        case .ended, .cancelled, .failed: session?.sendPointer("pointerUp", x: x, y: y, button: 0, buttons: 0)
+        default: break
+        }
+    }
+
+    @objc private func onScrollAbsolute(_ g: UIPanGestureRecognizer) {
+        guard g.state == .changed, let (x, y) = normalized(g.location(in: self)) else {
+            g.setTranslation(.zero, in: self); return
+        }
+        let t = g.translation(in: self)
+        session?.sendScroll(x: x, y: y, deltaX: Double(-t.x), deltaY: Double(-t.y))
+        g.setTranslation(.zero, in: self)
+    }
+
+    @objc private func onHoverAbsolute(_ g: UIHoverGestureRecognizer) {
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        session?.sendPointer("pointerMove", x: x, y: y, button: 0, buttons: 0)
+    }
 
     // MARK: Coordinate mapping
 

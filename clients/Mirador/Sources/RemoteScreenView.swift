@@ -11,7 +11,10 @@ struct RemoteScreenView: View {
     @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>?
 
-    private var keyBarVisible: Bool { controlsVisible || input.keyboardVisible }
+    /// The virtual cursor, pinch-zoom, key bar, and software keyboard are phone-only; iPad keeps its
+    /// previous direct-touch / trackpad behavior with no extra chrome.
+    private let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+    private var keyBarVisible: Bool { isPhone && (controlsVisible || input.keyboardVisible) }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -21,11 +24,11 @@ struct RemoteScreenView: View {
                 ZStack {
                     VideoSurface(session: session)
                     InputCaptureView(session: session, state: input, onRevealControls: revealControls)
-                    cursorOverlay(in: geo.size)
+                    if isPhone { cursorOverlay(in: geo.size) }
                 }
             }
-            .scaleEffect(input.zoom, anchor: .center)
-            .offset(input.offset)
+            .scaleEffect(isPhone ? input.zoom : 1, anchor: .center)
+            .offset(isPhone ? input.offset : .zero)
             .ignoresSafeArea()
 
             statusBar
@@ -46,8 +49,8 @@ struct RemoteScreenView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: keyBarVisible)
 
-            // Always-reachable way to summon the keyboard when the chrome is hidden.
-            if !keyBarVisible {
+            // Always-reachable way to summon the keyboard when the chrome is hidden (phone only).
+            if isPhone, !keyBarVisible {
                 VStack {
                     Spacer()
                     HStack {
