@@ -45,6 +45,27 @@ struct RemoteScreenView: View {
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: keyBarVisible)
+
+            // Always-reachable way to summon the keyboard when the chrome is hidden.
+            if !keyBarVisible {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Button { input.keyboardVisible = true } label: {
+                            Image(systemName: "keyboard")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .padding(12)
+                                .background(.black.opacity(0.5), in: Circle())
+                        }
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 16)
+                    }
+                }
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.2), value: keyBarVisible)
+            }
         }
         .onAppear {
             session.start()
@@ -97,15 +118,6 @@ struct RemoteScreenView: View {
                 .font(.caption.monospaced())
                 .foregroundStyle(.white)
             Spacer()
-            Button {
-                input.keyboardVisible.toggle()
-                revealControls()
-            } label: {
-                Image(systemName: input.keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-            .tint(.white)
             Button("Disconnect", action: onDisconnect)
                 .font(.caption)
                 .buttonStyle(.bordered)
@@ -154,6 +166,8 @@ private struct KeyBar: View {
             specialKey("↓") { send("ArrowDown") }
             specialKey("↑") { send("ArrowUp") }
             specialKey("→") { send("ArrowRight") }
+            Spacer(minLength: 4)
+            specialKey(state.keyboardVisible ? "⌄" : "⌨") { state.keyboardVisible.toggle() }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

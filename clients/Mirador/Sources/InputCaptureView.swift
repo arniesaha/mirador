@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import GameController
 
 /// Maps a hardware-keyboard HID usage to the server's KeyboardEvent-style `code` string
 /// (see MacKeyCodeMapper on the server).
@@ -105,9 +106,13 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
 
     override var canBecomeFirstResponder: Bool { true }
+
+    /// Only grab first responder up front when a *physical* keyboard is attached (so its keys flow
+    /// without forcing the on-screen keyboard). On a phone, first responder is driven solely by the
+    /// keyboard toggle — otherwise every screen tap would pop the software keyboard.
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { becomeFirstResponder() }   // capture hardware keys; soft keyboard stays hidden
+        if window != nil, GCKeyboard.coalesced != nil { becomeFirstResponder() }
     }
 
     private func setupGestures() {
@@ -222,7 +227,6 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     // MARK: Gesture handlers
 
     @objc private func onTap(_ g: UITapGestureRecognizer) {
-        if !isFirstResponder { becomeFirstResponder() }
         sendCursorPointer("pointerDown", button: 0, buttons: 1)
         sendCursorPointer("pointerUp", button: 0, buttons: 0)
     }
@@ -298,16 +302,25 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
 
     // MARK: Software keyboard (UIKeyInput)
 
-    /// A zero-size input view keeps us first responder (so hardware keys keep flowing) without
-    /// presenting the software keyboard. Swapped for `nil` to reveal the system keyboard on demand.
+    /// With a hardware keyboard attached we stay first responder to capture its keys; a zero-size
+    /// input view suppresses the on-screen keyboard until the user explicitly asks for it. Without a
+    /// hardware keyboard, returning `nil` lets the system keyboard appear whenever we're first
+    /// responder.
     private lazy var zeroInputView = UIView(frame: .zero)
-    override var inputView: UIView? { keyboardVisible ? nil : zeroInputView }
+    override var inputView: UIView? {
+        (!keyboardVisible && GCKeyboard.coalesced != nil) ? zeroInputView : nil
+    }
 
     func syncKeyboard(visible: Bool) {
         guard keyboardVisible != visible else { return }
         keyboardVisible = visible
-        if visible, !isFirstResponder { becomeFirstResponder() }
-        reloadInputViews()
+        if visible {
+            if isFirstResponder { reloadInputViews() } else { becomeFirstResponder() }
+        } else if GCKeyboard.coalesced != nil {
+            reloadInputViews()        // keep capturing hardware keys; just hide the soft keyboard
+        } else {
+            resignFirstResponder()    // no hardware keyboard: dropping first responder dismisses it
+        }
     }
 
     var hasText: Bool { true }
