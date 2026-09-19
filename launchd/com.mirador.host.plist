@@ -15,7 +15,7 @@
     <string>8787</string>
   </array>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
   <key>KeepAlive</key>
   <false/>
   <key>StandardOutPath</key>
