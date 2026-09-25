@@ -230,7 +230,7 @@ public final class CGEventInputDispatcher: InputEventDispatching, @unchecked Sen
             throw InputEventError.accessibilityPermissionDenied
         }
 
-        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let bounds = CGDisplayBounds(DisplaySelection.selectedCGDisplayID())
         switch event.type {
         case .move, .pointerMove:
             postMove(to: event.point(in: bounds), buttons: event.buttons ?? 0, flags: event.modifiers.cgFlags)

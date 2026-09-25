@@ -86,7 +86,10 @@ public actor ScreenCaptureService {
             }
 
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = Self.selectDisplay(from: content.displays) else {
+            guard let display = DisplaySelection.selectDisplay(from: content.displays) else {
+                if let requestedName = DisplaySelection.configuredDisplayName() {
+                    log("No ScreenCaptureKit display matched MIRADOR_DISPLAY_NAME=\(requestedName)")
+                }
                 throw ScreenCaptureServiceError.noDisplayAvailable
             }
 
@@ -134,7 +137,8 @@ public actor ScreenCaptureService {
             // Keep the display rendering while a viewer is connected — otherwise the display
             // idle-sleeps and ScreenCaptureKit captures a black frame (the cursor still moves).
             beginPreventDisplaySleep()
-            log("ScreenCaptureKit capture started for displayID=\(display.displayID) captureSize=\(configuration.width)x\(configuration.height) displaySize=\(display.width)x\(display.height) at ~\(Self.captureFps) fps (h264=\(encoder != nil))")
+            let displayName = DisplaySelection.displayName(for: display.displayID) ?? "unknown"
+            log("ScreenCaptureKit capture started for displayID=\(display.displayID) displayName=\(displayName) captureSize=\(configuration.width)x\(configuration.height) displaySize=\(display.width)x\(display.height) at ~\(Self.captureFps) fps (h264=\(encoder != nil))")
         } catch {
             self.running = false
             log("ScreenCaptureKit capture failed: \(error). Grant Screen Recording permission to the built mirador executable in System Settings > Privacy & Security > Screen & System Audio Recording, then restart mirador.")
@@ -238,15 +242,6 @@ public actor ScreenCaptureService {
         frameQueue.push(jpeg)
         frameStats = frameStats.recorded(byteCount: jpeg.count)
     }
-
-    #if canImport(ScreenCaptureKit)
-    private static func selectDisplay(from displays: [SCDisplay]) -> SCDisplay? {
-        let mainDisplayID = CGMainDisplayID()
-        return displays.first(where: { $0.displayID == mainDisplayID }) ?? displays.max { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        }
-    }
-    #endif
 
     private func log(_ message: String) {
         FileHandle.standardError.write(Data("mirador: \(message)\n".utf8))
