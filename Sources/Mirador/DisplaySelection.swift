@@ -52,6 +52,13 @@ enum DisplaySelection {
             }) {
                 return display
             }
+
+            // macOS removes mirror targets from SCShareableContent and NSScreen.
+            // Capture the mirror master instead: it has the same framebuffer and
+            // keeps the physical and remote desktops usable at the same time.
+            if let display = mirroredMasterDisplay(from: displays) {
+                return display
+            }
             return nil
         }
 
@@ -59,6 +66,20 @@ enum DisplaySelection {
         return displays.first(where: { $0.displayID == mainDisplayID }) ?? displays.max { lhs, rhs in
             (lhs.width * lhs.height) < (rhs.width * rhs.height)
         }
+    }
+
+    private static func mirroredMasterDisplay(from displays: [SCDisplay]) -> SCDisplay? {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return nil }
+
+        var onlineDisplayIDs = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &onlineDisplayIDs, &count) == .success else { return nil }
+
+        let mirrorMasterIDs = Set(onlineDisplayIDs.compactMap { displayID -> CGDirectDisplayID? in
+            let masterID = CGDisplayMirrorsDisplay(displayID)
+            return masterID == kCGNullDirectDisplay ? nil : masterID
+        })
+        return displays.first(where: { mirrorMasterIDs.contains($0.displayID) })
     }
     #endif
 }
