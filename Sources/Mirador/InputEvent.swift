@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ApplicationServices
+import AppKit
 
 public struct InputEvent: Equatable, Sendable {
     public enum EventType: String, Codable, Sendable {
@@ -118,6 +119,13 @@ public struct InputEvent: Equatable, Sendable {
             y: bounds.minY + bounds.height * normalizedY
         )
     }
+
+    public func point(in bounds: CGRect, streamConfiguration: StreamConfiguration) -> CGPoint? {
+        let normalized = CGPoint(x: x ?? 0, y: y ?? 0)
+        let mapped = streamConfiguration.sourceNormalizedPoint(fromOutputNormalized: normalized, sourceSize: bounds.size)
+        guard let mapped else { return nil }
+        return CGPoint(x: bounds.minX + bounds.width * mapped.x, y: bounds.minY + bounds.height * mapped.y)
+    }
 }
 
 public struct InputModifiers: Equatable, Sendable {
@@ -222,7 +230,12 @@ public enum MacKeyCodeMapper {
 }
 
 public final class CGEventInputDispatcher: InputEventDispatching, @unchecked Sendable {
-    public init() {}
+    private var mouseEvents = MouseEventFactory()
+    private let dispatchLock = NSLock()
+    private let streamConfiguration: StreamConfiguration
+    public init(streamConfiguration: StreamConfiguration = .configured()) {
+        self.streamConfiguration = streamConfiguration
+    }
 
     public func dispatch(_ event: InputEvent) throws {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
@@ -230,22 +243,26 @@ public final class CGEventInputDispatcher: InputEventDispatching, @unchecked Sen
             throw InputEventError.accessibilityPermissionDenied
         }
 
+        dispatchLock.lock()
+        defer { dispatchLock.unlock() }
         let bounds = CGDisplayBounds(DisplaySelection.selectedCGDisplayID())
         switch event.type {
         case .move, .pointerMove:
-            postMove(to: event.point(in: bounds), buttons: event.buttons ?? 0, flags: event.modifiers.cgFlags)
+            guard let point = event.point(in: bounds, streamConfiguration: streamConfiguration) else { return }
+            postMove(to: point, buttons: event.buttons ?? 0, flags: event.modifiers.cgFlags)
         case .click:
-            let point = event.point(in: bounds)
+            guard let point = event.point(in: bounds, streamConfiguration: streamConfiguration) else { return }
             postMouse(type: .leftMouseDown, at: point, button: .left, flags: event.modifiers.cgFlags)
             postMouse(type: .leftMouseUp, at: point, button: .left, flags: event.modifiers.cgFlags)
         case .pointerDown:
-            let point = event.point(in: bounds)
+            guard let point = event.point(in: bounds, streamConfiguration: streamConfiguration) else { return }
             postMouse(type: mouseDownType(for: event.button), at: point, button: mouseButton(for: event.button), flags: event.modifiers.cgFlags)
         case .pointerUp:
-            let point = event.point(in: bounds)
+            guard let point = event.point(in: bounds, streamConfiguration: streamConfiguration) else { return }
             postMouse(type: mouseUpType(for: event.button), at: point, button: mouseButton(for: event.button), flags: event.modifiers.cgFlags)
         case .scroll:
-            postMove(to: event.point(in: bounds), buttons: 0, flags: event.modifiers.cgFlags)
+            guard let point = event.point(in: bounds, streamConfiguration: streamConfiguration) else { return }
+            postMove(to: point, buttons: 0, flags: event.modifiers.cgFlags)
             postScroll(deltaX: event.deltaX ?? 0, deltaY: event.deltaY ?? 0)
         case .keyDown:
             try postKey(event, keyDown: true)
@@ -257,6 +274,7 @@ public final class CGEventInputDispatcher: InputEventDispatching, @unchecked Sen
     }
 
     private func postMove(to point: CGPoint, buttons: Int, flags: CGEventFlags) {
+        mouseEvents.pointerMoved(to: point)
         let type: CGEventType = buttons == 1 ? .leftMouseDragged : buttons == 2 ? .rightMouseDragged : .mouseMoved
         let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: buttons == 2 ? .right : .left)
         event?.flags = flags
@@ -264,8 +282,9 @@ public final class CGEventInputDispatcher: InputEventDispatching, @unchecked Sen
     }
 
     private func postMouse(type: CGEventType, at point: CGPoint, button: CGMouseButton, flags: CGEventFlags) {
-        let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
-        event?.flags = flags
+        let event = mouseEvents.makeEvent(type: type, point: point, button: button, flags: flags,
+                                         time: ProcessInfo.processInfo.systemUptime,
+                                         doubleClickInterval: NSEvent.doubleClickInterval)
         event?.post(tap: .cghidEventTap)
     }
 

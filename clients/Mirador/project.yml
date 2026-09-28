@@ -45,3 +45,14 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         NSLocalNetworkUsageDescription: "Mirador connects to your Mac on the local network to stream and control its screen."
+  MiradorInputTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+      # Exercise the UIKit input view without opening a real remote-desktop connection.
+      - path: Sources/InputCaptureView.swift
+      - path: Sources/InputState.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: "YES"
