@@ -38,6 +38,7 @@ public actor ScreenCaptureService {
     private let frameQueue: MJPEGFrameQueue
     private let h264Queue: H264FrameQueue
     private let consumers: CaptureConsumers
+    private let streamConfiguration: StreamConfiguration
     private var running = false
     private var stream: AnyObject?
     private var streamOutput: AnyObject?
@@ -46,10 +47,11 @@ public actor ScreenCaptureService {
     /// IOPMAssertionID (UInt32) held while capturing to keep the display awake; 0 = none.
     private var displaySleepAssertion: UInt32 = 0
 
-    public init(frameQueue: MJPEGFrameQueue, h264Queue: H264FrameQueue = H264FrameQueue(capacity: 2), consumers: CaptureConsumers = CaptureConsumers()) {
+    public init(frameQueue: MJPEGFrameQueue, h264Queue: H264FrameQueue = H264FrameQueue(capacity: 2), consumers: CaptureConsumers = CaptureConsumers(), streamConfiguration: StreamConfiguration = .configured()) {
         self.frameQueue = frameQueue
         self.h264Queue = h264Queue
         self.consumers = consumers
+        self.streamConfiguration = streamConfiguration
     }
 
     /// H.264 average bitrate (bits/s); override with `MIRADOR_H264_BITRATE_KBPS` for tuning.
@@ -86,7 +88,10 @@ public actor ScreenCaptureService {
             }
 
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = Self.selectDisplay(from: content.displays) else {
+            guard let display = DisplaySelection.selectDisplay(from: content.displays) else {
+                if let requestedName = DisplaySelection.configuredDisplayName() {
+                    log("No ScreenCaptureKit display matched MIRADOR_DISPLAY_NAME=\(requestedName)")
+                }
                 throw ScreenCaptureServiceError.noDisplayAvailable
             }
 
@@ -96,22 +101,16 @@ public actor ScreenCaptureService {
             configuration.queueDepth = 3
             configuration.pixelFormat = kCVPixelFormatType_32BGRA
             configuration.showsCursor = true
-            // H.264 is bandwidth-cheap, so capture at native width for sharp text on the
-            // viewer (the MJPEG fallback gets heavier, but it is only a fallback).
-            let maxWidth = 1920
-            if display.width > maxWidth {
-                configuration.width = maxWidth
-                configuration.height = max(1, Int(Double(display.height) * Double(maxWidth) / Double(display.width)))
-            } else {
-                configuration.width = display.width
-                configuration.height = display.height
-            }
+            let captureSize = streamConfiguration.captureSize(forDisplayWidth: display.width, height: display.height)
+            configuration.width = Int(captureSize.width)
+            configuration.height = Int(captureSize.height)
+            let outputSize = streamConfiguration.outputSize(forCaptureSize: captureSize)
 
             // Hardware H.264 encoder feeding the WebCodecs viewer path. Created here so it
             // exists only while capturing (idle = no VideoToolbox session). MJPEG still
             // works if the session can't be created.
             let encoder = H264Encoder(
-                configuration: H264Encoder.Configuration(width: configuration.width, height: configuration.height, fps: Self.captureFps, bitrate: Self.configuredBitrate(), maxFrameQP: Self.configuredMaxFrameQP()),
+                configuration: H264Encoder.Configuration(width: Int(outputSize.width), height: Int(outputSize.height), fps: Self.captureFps, bitrate: Self.configuredBitrate(), maxFrameQP: Self.configuredMaxFrameQP()),
                 onAccessUnit: { [h264Queue] data, isKeyframe, encodeMillis in
                     h264Queue.push(data, isKeyframe: isKeyframe, encodeMillis: encodeMillis)
                 }
@@ -121,7 +120,7 @@ public actor ScreenCaptureService {
             }
 
             let filter = SCContentFilter(display: display, excludingWindows: [])
-            let output = ScreenCaptureStreamOutput(owner: self, h264Encoder: encoder, consumers: consumers)
+            let output = ScreenCaptureStreamOutput(owner: self, h264Encoder: encoder, consumers: consumers, streamConfiguration: streamConfiguration, captureSize: captureSize)
             let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
             try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: ScreenCaptureStreamOutput.sampleQueue)
             try await stream.startCapture()
@@ -134,7 +133,8 @@ public actor ScreenCaptureService {
             // Keep the display rendering while a viewer is connected — otherwise the display
             // idle-sleeps and ScreenCaptureKit captures a black frame (the cursor still moves).
             beginPreventDisplaySleep()
-            log("ScreenCaptureKit capture started for displayID=\(display.displayID) captureSize=\(configuration.width)x\(configuration.height) displaySize=\(display.width)x\(display.height) at ~\(Self.captureFps) fps (h264=\(encoder != nil))")
+            let displayName = DisplaySelection.displayName(for: display.displayID) ?? "unknown"
+            log("ScreenCaptureKit capture started for displayID=\(display.displayID) displayName=\(displayName) captureSize=\(configuration.width)x\(configuration.height) outputSize=\(Int(outputSize.width))x\(Int(outputSize.height)) policy=\(streamConfiguration.scalingPolicy.rawValue) displaySize=\(display.width)x\(display.height) at ~\(Self.captureFps) fps (h264=\(encoder != nil))")
         } catch {
             self.running = false
             log("ScreenCaptureKit capture failed: \(error). Grant Screen Recording permission to the built mirador executable in System Settings > Privacy & Security > Screen & System Audio Recording, then restart mirador.")
@@ -239,15 +239,6 @@ public actor ScreenCaptureService {
         frameStats = frameStats.recorded(byteCount: jpeg.count)
     }
 
-    #if canImport(ScreenCaptureKit)
-    private static func selectDisplay(from displays: [SCDisplay]) -> SCDisplay? {
-        let mainDisplayID = CGMainDisplayID()
-        return displays.first(where: { $0.displayID == mainDisplayID }) ?? displays.max { lhs, rhs in
-            (lhs.width * lhs.height) < (rhs.width * rhs.height)
-        }
-    }
-    #endif
-
     private func log(_ message: String) {
         FileHandle.standardError.write(Data("mirador: \(message)\n".utf8))
     }
@@ -320,6 +311,33 @@ final class ScreenCaptureJPEGEncoder: @unchecked Sendable {
             options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality]
         )
     }
+
+    func render(_ pixelBuffer: CVPixelBuffer, with configuration: StreamConfiguration, captureSize: CGSize) -> CVPixelBuffer? {
+        guard configuration.scalingPolicy == .letterbox, let outputSize = configuration.fixedOutputSize else { return pixelBuffer }
+        let width = Int(outputSize.width)
+        let height = Int(outputSize.height)
+        guard width > 0, height > 0 else { return pixelBuffer }
+
+        var rendered: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:]
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &rendered) == kCVReturnSuccess,
+              let rendered else { return nil }
+
+        let content = configuration.contentRect(forSourceSize: captureSize)
+        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        let scaleX = content.width / max(1, source.extent.width)
+        let scaleY = content.height / max(1, source.extent.height)
+        let scaled = source.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+            .transformed(by: CGAffineTransform(translationX: content.minX, y: content.minY))
+        let canvas = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: outputSize))
+        let composed = scaled.composited(over: canvas)
+        context.render(composed, to: rendered, bounds: CGRect(origin: .zero, size: outputSize), colorSpace: colorSpace)
+        return rendered
+    }
 }
 #else
 final class ScreenCaptureJPEGEncoder: @unchecked Sendable {
@@ -335,11 +353,15 @@ private final class ScreenCaptureStreamOutput: NSObject, SCStreamOutput, SCStrea
     private let owner: ScreenCaptureService
     private let h264Encoder: H264Encoder?
     private let consumers: CaptureConsumers
+    private let streamConfiguration: StreamConfiguration
+    private let captureSize: CGSize
 
-    init(owner: ScreenCaptureService, h264Encoder: H264Encoder?, consumers: CaptureConsumers) {
+    init(owner: ScreenCaptureService, h264Encoder: H264Encoder?, consumers: CaptureConsumers, streamConfiguration: StreamConfiguration, captureSize: CGSize) {
         self.owner = owner
         self.h264Encoder = h264Encoder
         self.consumers = consumers
+        self.streamConfiguration = streamConfiguration
+        self.captureSize = captureSize
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
@@ -350,12 +372,16 @@ private final class ScreenCaptureStreamOutput: NSObject, SCStreamOutput, SCStrea
             : nil
 
         // Only run the encoder a viewer is actually watching (both are HW-accelerated but
-        // still cost power). H.264 for the WebCodecs path; CoreImage JPEG for MJPEG.
-        if let pixelBuffer, consumers.wantsH264 {
-            h264Encoder?.encode(pixelBuffer)
+        // still cost power). Apply stream geometry once so H.264 and MJPEG expose the same
+        // dimensions and letterbox/content rectangle.
+        let renderedPixelBuffer = pixelBuffer.flatMap {
+            ScreenCaptureJPEGEncoder.shared.render($0, with: streamConfiguration, captureSize: captureSize)
+        }
+        if let renderedPixelBuffer, consumers.wantsH264 {
+            h264Encoder?.encode(renderedPixelBuffer)
         }
         if consumers.wantsMJPEG {
-            let jpeg = pixelBuffer.flatMap { ScreenCaptureJPEGEncoder.shared.jpegData(from: $0, quality: 0.62) }
+            let jpeg = renderedPixelBuffer.flatMap { ScreenCaptureJPEGEncoder.shared.jpegData(from: $0, quality: 0.62) }
             Task { [owner] in
                 await owner.receiveCapturedJPEG(jpeg)
             }

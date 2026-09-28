@@ -28,6 +28,21 @@ xcodebuild -project Mirador.xcodeproj -scheme Mirador -sdk iphonesimulator \
 Device build: open in Xcode, set your Development Team (Signing & Capabilities), pick your iPhone/
 iPad, and Run.
 
+Input regression tests (run on an iPad simulator):
+
+```sh
+xcodebuild -project Mirador.xcodeproj -scheme MiradorInputTests \
+  -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
+  -derivedDataPath build CODE_SIGNING_ALLOWED=NO test
+```
+
+## iPad controls
+
+Click with the Magic Keyboard trackpad to left-click; double-click to open desktop items.
+Repeated clicks follow the Mac's double-click speed setting. Use a two-finger click to open the Mac's
+context menu at the pointer. A mouse's secondary button works too. Two-finger swipes scroll.
+On the touchscreen, tap to click and use one finger to drag.
+
 ## Connecting
 
 Enter the Mac's host (LAN IP `192.168.1.149`, or its Tailscale name), port `8787`, and the token

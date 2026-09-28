@@ -16,17 +16,17 @@ struct MiradorMain {
         // Shared per-format demand: the server reports MJPEG vs video viewers, the capture
         // callback runs only the encoder(s) someone is watching.
         let consumers = CaptureConsumers()
-        let captureService = ScreenCaptureService(frameQueue: frameQueue, h264Queue: h264Queue, consumers: consumers)
+        let streamConfiguration = StreamConfiguration.configured()
+        let captureService = ScreenCaptureService(frameQueue: frameQueue, h264Queue: h264Queue, consumers: consumers, streamConfiguration: streamConfiguration)
         // Demand-driven: capture/encode start on the first viewer and stop when the last
         // disconnects, so the host runs no ScreenCaptureKit/VideoToolbox pipeline while idle.
         let captureCoordinator = CaptureCoordinator(service: captureService)
 
-        let server = try HTTPServer(host: options.host, port: options.port, frameQueue: frameQueue, h264Queue: h264Queue, captureControl: captureCoordinator, consumers: consumers, authToken: authToken)
+        let server = try HTTPServer(host: options.host, port: options.port, frameQueue: frameQueue, h264Queue: h264Queue, captureControl: captureCoordinator, consumers: consumers, inputDispatcher: CGEventInputDispatcher(streamConfiguration: streamConfiguration), authToken: authToken)
         server.start()
 
         let viewerHost = options.host == "0.0.0.0" ? "127.0.0.1" : options.host
-        let tokenSuffix = authToken.isEmpty ? "" : "?token=\(authToken)"
-        print("mirador 0.1.0-poc listening on http://\(viewerHost):\(options.port)/\(tokenSuffix)")
+        print("mirador 0.1.0-poc listening on http://\(viewerHost):\(options.port)/")
         print("Press Ctrl-C to stop.")
 
         let shutdownSignal = await SignalShutdownWaiter.waitForTerminationSignal()

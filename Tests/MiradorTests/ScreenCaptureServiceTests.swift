@@ -63,3 +63,9 @@ import Testing
         #expect(ScreenCaptureService.configuredMaxFrameQP() == 26)
     }
 }
+
+@Test func configuredDisplayNameTrimsBlankValues() {
+    #expect(DisplaySelection.configuredDisplayName(environment: [:]) == nil)
+    #expect(DisplaySelection.configuredDisplayName(environment: [DisplaySelection.displayNameEnvironmentKey: "   " ]) == nil)
+    #expect(DisplaySelection.configuredDisplayName(environment: [DisplaySelection.displayNameEnvironmentKey: " Mirador Virtual "]) == "Mirador Virtual")
+}

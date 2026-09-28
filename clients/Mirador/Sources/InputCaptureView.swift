@@ -99,6 +99,8 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     private var rightTap: UITapGestureRecognizer!
     private var scroll: UIPanGestureRecognizer!
     private var pinch: UIPinchGestureRecognizer!
+    private var secondaryClick: UITapGestureRecognizer?
+    private var absoluteDrag: UIPanGestureRecognizer?
 
     init(session: RemoteSession, state: InputState) {
         self.session = session
@@ -130,9 +132,19 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(onTapAbsolute(_:)))
         addGestureRecognizer(tap)
 
+        // A Magic Keyboard two-finger click is one pointer with the secondary button pressed,
+        // not a two-touch screen tap. Keep this separate from the primary tap recognizer.
+        let secondary = UITapGestureRecognizer(target: self, action: #selector(onSecondaryClickAbsolute(_:)))
+        secondary.buttonMaskRequired = .secondary
+        secondary.delegate = self
+        secondaryClick = secondary
+        addGestureRecognizer(secondary)
+
         let drag = UIPanGestureRecognizer(target: self, action: #selector(onDragAbsolute(_:)))
         drag.minimumNumberOfTouches = 1
         drag.maximumNumberOfTouches = 1
+        drag.delegate = self
+        absoluteDrag = drag
         addGestureRecognizer(drag)
 
         scroll = UIPanGestureRecognizer(target: self, action: #selector(onScrollAbsolute(_:)))
@@ -215,6 +227,12 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
         case .ended, .cancelled, .failed: session?.sendPointer("pointerUp", x: x, y: y, button: 0, buttons: 0)
         default: break
         }
+    }
+
+    @objc private func onSecondaryClickAbsolute(_ g: UITapGestureRecognizer) {
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        session?.sendPointer("pointerDown", x: x, y: y, button: 2, buttons: 2)
+        session?.sendPointer("pointerUp", x: x, y: y, button: 2, buttons: 0)
     }
 
     @objc private func onScrollAbsolute(_ g: UIPanGestureRecognizer) {
@@ -380,6 +398,15 @@ final class RemoteInputUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     }
 
     // MARK: UIGestureRecognizerDelegate
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+        // buttonMaskRequired only filters pointer input, so also reject ordinary finger touches
+        // (empty mask). This works with UIKit's legacy pointer-as-direct-touch compatibility mode.
+        if g === secondaryClick { return event.buttonMask.contains(.secondary) }
+        // A secondary click with slight movement must never become a left-button drag.
+        if g === absoluteDrag { return !event.buttonMask.contains(.secondary) }
+        return true
+    }
 
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
